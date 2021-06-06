@@ -4,14 +4,33 @@ import aiofiles
 import aiohttp
 import asyncio
 import tqdm
+import os
 
 N_FETCHERS = 4
 
 FILE_I = "abitanti_2019_2020.csv"
-FILE_O = "output.csv"
-FILE_E = "errors.csv"
+FILE_O = "output2.csv"
 
 URL = "http://www.comuni-italiani.it/{}/{}/amm.html"
+
+
+async def preload():
+    preloaded = set()
+
+    if not os.path.exists(FILE_O):
+        return preloaded
+
+    async with aiofiles.open(FILE_O, "r") as f:
+        csv_reader = aiocsv.AsyncReader(f)
+
+        async for row in csv_reader:
+            preloaded.add(row[0])
+
+    return preloaded
+
+
+# Set of istat codes of already seen towns (used to remove duplicates and to use already fetched towns)
+seen = asyncio.run(preload())
 
 
 def init_progress():
@@ -27,8 +46,10 @@ def init_progress():
 
 progress = init_progress()
 
-# Set of istat codes of already seen town (used to remove duplicates)
-seen = set()
+
+def log_err(err):
+    progress.display(str(err) + "\n")
+    progress.refresh()
 
 
 def extract_mayor(text: str) -> str:
@@ -78,6 +99,8 @@ async def run_fetcher(i: asyncio.Queue, o: asyncio.Queue, sess: aiohttp.ClientSe
         async with sess.get(URL.format(istat_code[:3], istat_code[3:])) as resp:
             # If request didn't go well, skip it (but remember to mark input queue item as processed)
             if resp.status != 200:
+                log_err(Exception(f"Non 200 code: {resp.status}"))
+
                 # Some error, don't count towards total
                 progress.total -= 1
                 progress.update(0)
@@ -90,7 +113,9 @@ async def run_fetcher(i: asyncio.Queue, o: asyncio.Queue, sess: aiohttp.ClientSe
 
             try:
                 mayor = extract_mayor(text)
-            except:
+            except BaseException as err:
+                log_err(err)
+
                 # This line does not count so we have to decrease the estimate
                 progress.total -= 1
                 progress.update(0)
@@ -104,7 +129,7 @@ async def run_fetcher(i: asyncio.Queue, o: asyncio.Queue, sess: aiohttp.ClientSe
 
 
 async def run_writer(o: asyncio.Queue):
-    async with aiofiles.open(FILE_O, "w") as f:
+    async with aiofiles.open(FILE_O, "a") as f:
         writer = aiocsv.AsyncWriter(f)
 
         while True:
